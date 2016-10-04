@@ -1,0 +1,222 @@
+---
+title: "Civic Data Hackathon: Syracuse Roads Challenge"
+author: "Daniel Acuña, Assistant Professor, iSchool, Syracuse University"
+date: "10/4/2016"
+output: 
+  html_document:
+    fig_width: 8
+    fig_height: 6
+---
+
+```{r setup, warning=FALSE, message=FALSE}
+library(rgdal)
+library(ggmap)
+library(ggplot2)
+library(plyr)
+library(sqldf)
+library(RColorBrewer)
+library(cowplot)
+```
+
+```{r data, warning=FALSE, message=FALSE, cache=TRUE}
+syracuse_map <- get_map(unlist(geocode("Syracuse University, Syracuse, NY")), zoom = 15)
+city_map <- get_map(unlist(geocode("Syracuse University, Syracuse, NY")), zoom = 13)
+shapeData <- readOGR("../data/street_shapefile/",'streets')
+```
+
+```{r, warning=FALSE, message=FALSE}
+shp <- spTransform(shapeData, CRS("+proj=longlat +ellps=GRS80"))
+shape_data <- shp@data
+
+all_ratings = NULL
+for (year in seq(from=2000, to=2015)) {
+  ratings <- read.csv(paste0("../data/RoadRatings", year, '.csv'), 
+                      stringsAsFactors = FALSE)
+  ratings$ratings_year <- year
+  if (is.null(df)) {
+    all_ratings = ratings
+  } else {
+    all_ratings <- rbind(all_ratings, ratings)  
+  }
+}
+
+all_ratings$overall <- as.numeric(all_ratings$overall)
+all_ratings <- subset(all_ratings, !is.na(overall))
+
+all_data <- merge(shape_data, 
+              all_ratings,
+              by.x = "STREET_ID", 
+              by.y = "streetID")
+
+all_data$dateLastOverlay <- as.numeric(all_data$dateLastOverlay)
+all_data$dateLastOverlay[is.na(all_data$dateLastOverlay)] <- 1985
+all_data$pavement <- as.numeric(all_data$pavement)
+all_data$length <- as.numeric(all_data$length)
+all_data$overall[all_data$overall>10] <- 10
+all_data$crack <- as.numeric(all_data$crack)
+all_data$pavement <- as.numeric(all_data$pavement)
+all_data$patch <- as.numeric(all_data$patch)
+
+create_data <- function(year) {
+  shp@data <- merge(shape_data, 
+                    subset(all_ratings, ratings_year == year), 
+                    by.x = "STREET_ID", 
+                    by.y = "streetID")
+  
+  
+  data_fort <- fortify(shp)
+  
+  
+  shp.df <- data.frame(id=rownames(shp@data),
+                       shp@data, stringsAsFactors=F)
+  
+  data_merged <- join(data_fort, shp.df, by='id')
+  data_merged <- subset(data_merged, !is.na(overall))
+  
+  data_merged$dateLastOverlay <- as.numeric(data_merged$dateLastOverlay)
+  data_merged$dateLastOverlay[is.na(data_merged$dateLastOverlay)] <- 1985
+  data_merged$pavement <- as.numeric(data_merged$pavement)
+  data_merged$length <- as.numeric(data_merged$length)
+  data_merged
+}
+```
+
+# The 2015 data
+
+```{r cars, warning=FALSE, message=FALSE}
+data_merged_2015 <- create_data(2015)
+
+
+ground_truth <- ggmap(syracuse_map, darken = c(0.2, "Black")) + 
+  geom_path(data=data_merged_2015, size=1, 
+            aes(x=long, y=lat, group=group, color=overall)) +
+  scale_color_distiller(type="div", palette = "RdBu", trans = "reverse", limits=c(10, 0)) +
+  labs(x="",y="") +
+  theme(axis.text=element_blank(),axis.ticks=element_blank()) +
+  ggtitle("2015 data (SU)")
+print(ground_truth)
+```
+
+
+## Predicting 2015 without using street's history
+
+```{r pressure, warning=FALSE, message=FALSE}
+
+fit_model <- lm(overall ~ CART_TYPE + MUNL + MUNR + length + width + class + dateLastOverlay,  
+                subset(all_data, subset = ratings_year <= 2014))
+
+predicted_data <- subset(all_data, subset = ratings_year == 2015 & CART_TYPE != "PEDESTRIAN")
+
+
+predicted_overall <- predict(fit_model, predicted_data)
+
+predicted_data$predicted_data <- predicted_overall
+
+predictions <- data.frame(STREET_ID = predicted_data$STREET_ID, predict = predicted_overall)
+
+predicted_data_merged_2015 <- join(data_merged_2015, predictions, by = "STREET_ID")
+
+
+baseline_model <- ggmap(syracuse_map, darken = c(0.2, "Black")) + 
+  geom_path(data=predicted_data_merged_2015, size=1, 
+            aes(x=long, y=lat, group=group, color=predict)) +
+  scale_color_distiller(type="div", palette = "RdBu", trans = "reverse", limits=c(10, 0)) +
+  labs(x="",y="") +
+  theme(axis.text=element_blank(),axis.ticks=element_blank()) +
+  ggtitle("Non-temporal prediction (SU)")
+plot_grid(ground_truth, baseline_model)
+```
+
+## Predicting 2015 using street's previous year data
+
+```{r, warning=FALSE, message=FALSE}
+temporal_prediction <- function(years_back, background="Black", map=syracuse_map, line_size=1) {
+  temporal_data =sqldf(paste0("SELECT a1.overall, 
+      a1.CART_TYPE,
+                       a1.MUNL,
+                       a1.MUNR,
+                       a1.length,
+                       a1.width,
+                       a1.class,
+                       a1.dateLastOverlay,
+                       a2.dateLastOverlay previous_dateLastOverlay,
+                       a2.pavement,
+                       a2.overall as previous_overall,
+                       a2.crack,
+                       a2.patch,
+                       a1.ratings_year,
+                       a1.STREET_ID
+                       from 
+                       all_data a1, 
+                       all_data a2 
+                       where 
+                       a1.STREET_ID = a2.STREET_ID and 
+                       a2.ratings_year = a1.ratings_year - ", years_back))
+  
+  # Estimation model
+  fit_model2 <- lm(overall ~ CART_TYPE + MUNL + MUNR + length + width + class + dateLastOverlay +
+                     previous_dateLastOverlay + pavement + previous_overall + crack + patch + pavement,
+                   subset(temporal_data, ratings_year <= 2014))
+  
+  predicted_data2 <- subset(temporal_data, subset = ratings_year == 2015 & CART_TYPE != "PEDESTRIAN")
+  
+  predicted_overall2 <- predict(fit_model2, predicted_data2)
+  
+  predicted_data2$predicted_data <- predicted_overall2
+  
+  predictions2 <- data.frame(STREET_ID = predicted_data2$STREET_ID, predict = predicted_overall2)
+  
+  predicted_data2_merged_2015 <- join(data_merged_2015, predictions2, by = "STREET_ID")
+  ggmap(map, darken = c(0.2, background)) + 
+    geom_path(data=predicted_data2_merged_2015, size=line_size, 
+              aes(x=long, y=lat, group=group, color=predict)) +
+    scale_color_distiller(type="div", palette = "RdBu", trans = "reverse", limits=c(10, 0)) +
+    labs(x="",y="") +
+    theme(axis.text=element_blank(),axis.ticks=element_blank())
+}
+```
+
+## Using one year back
+
+```{r, warning=FALSE, message=FALSE}
+one_year_temporal_prediction <- temporal_prediction(1) + ggtitle(paste0("1-year ahead prediction (SU)"))
+plot_grid(ground_truth, one_year_temporal_prediction)
+```
+
+## Using ten years back
+
+Still much better than using no history at all!
+
+```{r, warning=FALSE, message=FALSE}
+ten_year_temporal_prediction <- temporal_prediction(10) + ggtitle(paste0("10-year ahead prediction (SU)"))
+plot_grid(ground_truth, ten_year_temporal_prediction)
+```
+
+
+## For the entire city of Syracuse
+```{r, warning=FALSE, message=FALSE}
+
+ground_truth_whole_city <- ggmap(city_map, darken = c(0.2, "Black")) + 
+  geom_path(data=data_merged_2015, size=0.5, 
+            aes(x=long, y=lat, group=group, color=overall)) +
+  scale_color_distiller(type="div", palette = "RdBu", trans = "reverse", limits=c(10, 0)) +
+  labs(x="",y="") +
+  theme(axis.text=element_blank(),axis.ticks=element_blank()) +
+  ggtitle("2015 data (City of Syracuse)")
+
+base_line_whole_city <- ggmap(city_map, darken = c(0.2, "Black")) + 
+  geom_path(data=predicted_data_merged_2015, size=0.5, 
+            aes(x=long, y=lat, group=group, color=predict)) +
+  scale_color_distiller(type="div", palette = "RdBu", trans = "reverse", limits=c(10, 0)) +
+  labs(x="",y="") +
+  theme(axis.text=element_blank(),axis.ticks=element_blank()) +
+  ggtitle("Non-temporal prediction (City of Syracuse)")
+
+
+plot_grid(ground_truth_whole_city, base_line_whole_city)
+
+ten_year_whole_city <- temporal_prediction(10, map=city_map, line_size = 0.5) + 
+        ggtitle(paste0("10-year ahead prediction (City of Syracuse)"))
+
+plot_grid(ground_truth_whole_city, ten_year_whole_city)
+```
