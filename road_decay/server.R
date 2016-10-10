@@ -28,12 +28,14 @@ prediction_formula_potholes <- formula(n_potholes ~ CART_TYPE + MUNL + MUNR + le
 temporal_data2 <- readRDS('../data/road_temporal_data.rds')
 
 # select smallest year back
-latest_temporal_data <- sqldf('
-                              select td.*
-                              from
-                              (select STREET_ID, min(years_back) as years_back from temporal_data2 group by STREET_ID) latest_year_rated,
-                              temporal_data2 td
-                              where td.STREET_ID = latest_year_rated.STREET_ID and td.years_back = latest_year_rated.years_back')
+# latest_temporal_data <- sqldf('
+#                               select td.*
+#                               from
+#                               (select STREET_ID, min(years_back) as years_back from temporal_data2 group by STREET_ID) latest_year_rated,
+#                               temporal_data2 td
+#                               where td.STREET_ID = latest_year_rated.STREET_ID and td.years_back = latest_year_rated.years_back')
+
+latest_temporal_data <- readRDS('../data/latest_temporal_data.rds')
 
 # data_fort <- readRDS('../data/data_fort.rds')
 # 
