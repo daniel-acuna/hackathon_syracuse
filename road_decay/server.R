@@ -25,7 +25,7 @@ prediction_formula_potholes <- formula(n_potholes ~ CART_TYPE + MUNL + MUNR + le
                                          previous_yearRated + overall + pavement + crack + patch + previous_overall + previous_pavement +
                                          previous_crack + previous_patch + I(2016 - yearRated))
 
-temporal_data2 <- readRDS('../data/road_temporal_data.rds')
+temporal_data2 <- readRDS('data/road_temporal_data.rds')
 
 # select smallest year back
 # latest_temporal_data <- sqldf('
@@ -35,20 +35,13 @@ temporal_data2 <- readRDS('../data/road_temporal_data.rds')
 #                               temporal_data2 td
 #                               where td.STREET_ID = latest_year_rated.STREET_ID and td.years_back = latest_year_rated.years_back')
 
-latest_temporal_data <- readRDS('../data/latest_temporal_data.rds')
+latest_temporal_data <- readRDS('data/latest_temporal_data.rds')
 
-# data_fort <- readRDS('../data/data_fort.rds')
-# 
-# shapes_example <- readRDS('../data/shapes.rds')
-# 
-# shapeData <- readOGR("../data/street_shapefile/",'streets')
-
-
-year_2015 <- readRDS('../data/final_shape_data.rds')
-shape_2015 <- readRDS('../data/final_shape_data_sp.rds')
+year_2015 <- readRDS('data/final_shape_data.rds')
+shape_2015 <- readRDS('data/final_shape_data_sp.rds')
 shape_data <- shape_2015@data
 color_palette <- colorRampPalette(brewer.pal(11, "RdBu"))(10)
-xgboost_final_model <- xgb.load('../model/xgboost_final_model.model')
+xgboost_final_model <- xgb.load('model/xgboost_final_model.model')
 color_list <- sample(color_palette, dim(shape_2015@data)[1], replace = TRUE)
 
 
