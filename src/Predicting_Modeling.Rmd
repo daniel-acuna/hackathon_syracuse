@@ -1,0 +1,132 @@
+---
+title: "Predictive models"
+author: "Daniel Acuña, Assistant Professor, iSchool, Syracuse University"
+date: "10/4/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rgdal)
+library(ggmap)
+library(ggplot2)
+library(plyr)
+library(sqldf)
+library(RColorBrewer)
+library(cowplot)
+library(lubridate)
+library(caret)
+library(stringr)
+```
+
+# Introduction
+
+We build a predictive model of road decay given previous measurements and pot holes
+
+```{r, warning=FALSE, message=FALSE, code=readLines('build_dataframes.R'), cache=TRUE }
+```
+
+```{r cleaning}
+road_conditions <- subset(unique(na.exclude(all_data[, 
+          c('overall', 'CART_TYPE', 'MUNL', 'MUNR', 
+            'length', 'width', 'crack', 'pavement', 'patch', 
+            'class', 'dateLastOverlay', 'yearRated',  'STREET_ID')])),
+          dateLastOverlay > 1985 & yearRated > 1985)
+```
+
+
+```{r predicting evolution of decay}
+years_back <- data.frame(years = seq(from=1, to=30))
+temporal_data =sqldf(paste0("SELECT 
+                       rc1.overall, 
+                       rc1.pavement, 
+                       rc1.crack, 
+                       rc1.patch, 
+                       rc1.CART_TYPE,
+                       rc1.MUNL,
+                       rc1.MUNR,
+                       rc1.length,
+                       rc1.width,
+                       rc1.class,
+                       rc1.dateLastOverlay as yearOverlay,
+                       rc1.yearRated,
+                       rc2.yearRated as previous_yearRated,
+                       rc2.overall as previous_overall,
+                       rc2.pavement as previous_pavement,
+                       rc2.crack as previous_crack,
+                       rc2.patch as previous_patch,
+                       rc1.STREET_ID,
+                       yb.years as years_back
+                       from 
+                       road_conditions rc1, 
+                       road_conditions rc2,
+                       years_back as yb
+                       where 
+                       rc1.STREET_ID = rc2.STREET_ID and 
+                       rc2.yearRated = rc1.yearRated - yb.years"))
+cummulative_potholes <- as.data.frame(potholes %>% group_by(STREET_ID) %>% summarize(n_potholes = n()))
+temporal_data <- merge(temporal_data, cummulative_potholes, by = "STREET_ID", all.x = TRUE)
+temporal_data$n_potholes[is.na(temporal_data$n_potholes)] <- 0
+```
+
+```{r, split into three sets}
+set.seed(1)
+inTrainValidTest <- createDataPartition(temporal_data$overall, p = 0.90, list=FALSE)
+training_valid <- temporal_data[inTrainValidTest, ]
+test_data <- temporal_data[-inTrainValidTest, ]
+
+inTrainValid <- createDataPartition(training_valid$overall, p = 0.90, list=FALSE)
+train_data <- training_valid[inTrainValid, ]
+valid_data <- training_valid[-inTrainValid, ]
+
+
+
+```
+
+```{r}
+# control <- trainControl(method="repeatedcv", number=4, repeats=1)
+# tunegrid <- expand.grid(.mtry=sqrt(ncol(training)))
+prediction_formula_nohistory <- formula(overall ~ CART_TYPE + MUNL + MUNR + length + width + class + yearOverlay)
+
+prediction_formula_history <- formula(overall ~ CART_TYPE + MUNL + MUNR + length + width + class + yearOverlay +
+            previous_yearRated + previous_overall + previous_pavement +
+            previous_crack + previous_patch + years_back)
+model_frame_full <- model.matrix(prediction_formula_history, train_data)
+
+# rf_gridsearch <- train(formula, method='rf', trControl = control, tuneGrid = tunegrid)
+
+model_with_survey <- lm(prediction_formula_history, train_data)
+model_simple <- lm(prediction_formula_nohistory, train_data)
+# rf <- randomForest(prediction_formula_history, data = train_data)
+xgboost_model <- xgboost(data = model_frame_full, label = train_data$overall, nthread = 4, nrounds = 100)
+
+rmse_simple <- sqrt(mean((predict(model_simple, valid_data) - valid_data$overall)^2))
+rmse_with_survey <- sqrt(mean((predict(model_with_survey, valid_data) - valid_data$overall)^2))
+rmse_xgboost <- sqrt(mean((predict(xgboost_model, model.matrix(prediction_formula_history, valid_data)) - valid_data$overall)^2))
+
+```
+
+
+```{r}
+
+xgboost_final_model <- xgboost(data = model.matrix(prediction_formula_history, temporal_data), label = temporal_data$overall, nthread = 8, nrounds = 200)
+xgb.save(xgboost_final_model, '../model/xgboost_final_model.model')
+```
+
+```{r}
+# predicting potholes
+prediction_formula_potholes <- formula(n_potholes ~ CART_TYPE + MUNL + MUNR + length + width + class + yearOverlay +
+            previous_yearRated + overall + pavement + crack + patch + previous_overall + previous_pavement +
+            previous_crack + previous_patch + I(2016 - yearRated))
+
+model_frame_full_potholes <- model.matrix(prediction_formula_potholes, temporal_data)
+xgboost_final_model_potholes <- xgboost(data = model_frame_full_potholes, label = temporal_data$n_potholes, nthread = 8, nrounds = 200)
+xgb.save(xgboost_final_model_potholes, '../model/xgboost_final_model_potholes.model')
+
+```
+
+```{r}
+# save map
+data_fort <- fortify(shp)
+saveRDS(data_fort, '../data/data_fort.rds')
+```
